@@ -1,0 +1,443 @@
+package trainLocationProblem;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.PriorityQueue;
+
+import shuntingYard.Location;
+import shuntingYard.Side;
+import solutionSpace.SpaceSolution;
+import solutionSpace.SpaceSolutionAssembly;
+
+/**
+ * This class locates one or more moments on a single track such that no
+ * overlapping moments exist. It is allowed however to locate a moment outside
+ * of the range of the track if no more moments fit on the track.
+ * 
+ * @author daan.vandenheuvel
+ *
+ */
+public class MomentLocator {
+	
+	private static final boolean DEBUG = false; 
+	
+	public MomentLocator() {
+	}
+	
+	public SpaceSolutionAssembly locateMoment(TlpMoment m) throws Exception {
+		if (!m.hasTrackAssigned()) {
+			throw new Exception("This method may only be called for moments with a location assigned."); 
+		}
+		return this.locateMomentAt(m, m.getArrivingSide());
+	}
+
+	/**
+	 * This method is called if the moment m is relocated to another track. This
+	 * method shifts all moments to the right of m as far left as possible.
+	 * 
+	 * @param relocatedMoment
+	 *            The moment which is located to another track.
+	 * @param s
+	 *            The solutions to which changes to the schedule must be added.
+	 * @throws Exception
+	 */
+	
+	/**
+	 * 
+	 * @param m
+	 * @param s
+	 * @throws Exception
+	 */
+	private void propagateCoordinateToLeft(TlpMoment relocatedMoment, SpaceSolutionAssembly s) throws Exception {
+		
+		HashMap<TlpMoment, Integer> changed = new HashMap<>(); 
+		changed.put(relocatedMoment, -relocatedMoment.getTrainLength()); 
+		
+		// Obtain a list of moments to the left and a list with moments to the right of the current moment. 
+		Side option = relocatedMoment.getArrivingSide(); 
+		ArrayList<TlpMoment> aSide = relocatedMoment.getMomentsAtTrack(option.getTrack()); 
+		ArrayList<TlpMoment> bSide = new ArrayList<>(); 
+		splitMoments(aSide, bSide, relocatedMoment.getTimePoint(), option); 
+		
+		PriorityQueue<TlpMoment> momentsToTheRight = new PriorityQueue<>(10, new Comparator<TlpMoment>() {
+			@Override
+			public int compare(TlpMoment a, TlpMoment b) {
+				//TODO: check if this is correct
+				return a.getCoordinate() - b.getCoordinate();
+			}
+		});
+		momentsToTheRight.addAll(bSide); 
+		while (!momentsToTheRight.isEmpty()) {
+			TlpMoment m = momentsToTheRight.poll(); 
+			// Split moments in left and right side
+			option = m.getArrivingSide(); 
+			ArrayList<TlpMoment> aSideOfM = m.getMomentsAtTrack(option.getTrack()); 
+			ArrayList<TlpMoment> bSideOfM = new ArrayList<>(); 
+			splitMoments(aSideOfM, bSideOfM, m.getTimePoint(), option); 
+			// Get the highest coordinate of a moment located to the left of m 
+			int maxCoordinate = 0; 
+			for (TlpMoment q : aSideOfM) {
+				int coordinate 	= (changed.containsKey(q)) ? changed.get(q) : q.getCoordinate(); 
+				coordinate 		+= q.getTrainLength(); 
+				if (coordinate > maxCoordinate) {
+					maxCoordinate = coordinate; 
+				}
+			}
+			// If the hihghest coordinate is smaller than the current coordinate of m, change the coordinate of m
+			if (maxCoordinate < m.getCoordinate()) {
+				changed.put(m, maxCoordinate); 
+				// Add moments to the right of shifted moment m which are not yet added. 
+				for (TlpMoment q : bSideOfM) {
+					if (!momentsToTheRight.contains(q)) {
+						momentsToTheRight.add(q); 
+					}
+				}
+			}
+		}
+		// Add the required solutions
+		changed.remove(relocatedMoment); 
+		for (TlpMoment m : changed.keySet()) {
+			int coordinate = changed.get(m); 
+			SpaceSolution s1 = new SpaceSolution(m.getObservedMoment(), coordinate, 0); 
+			s.add(s1);
+		}
+	}
+	
+	public SpaceSolutionAssembly locateMomentAt(TlpMoment m, Side option) throws Exception {
+		if (m.getArrivingSide().equals(option.getOtherSide())) {
+			throw new Exception("We currently do not support to relocate a moment to the same track, " 
+					+ m.toString() + " located on " + m.getArrivingSide().toString() + " cannot be relocated to " + option.toString()); 
+		}
+		
+		// Obtain a list of moments to the left and a list with moments to the right of the current moment. 
+		ArrayList<TlpMoment> aSide = m.getMomentsAtTrack(option.getTrack()); 
+		ArrayList<TlpMoment> bSide = new ArrayList<>(); 
+		splitMoments(aSide, bSide, m.getTimePoint(), option); 
+		
+		// Get the most right coordinate of moments to the left of the current moment. 
+		int mostRightCoordinate = this.getMostRightCoordinate(aSide); 
+
+		// create a solution for this moment such that it is located as most to the left as possible. 
+		SpaceSolutionAssembly spaceSolution = new SpaceSolutionAssembly(m.getObservedMoment(), mostRightCoordinate, 12345); // Cost are arbitrary and are changed later. 
+		
+		// Propagate the new coordinate of this moment to the right (bSide)
+		int furthestPoint = mostRightCoordinate + m.getTrainLength(); 
+		this.propagateCoordinateToRight(furthestPoint, bSide, spaceSolution, option);
+		
+		return spaceSolution; 
+	}
+
+	/**
+	 * This method calculates the changes to be made within the schedule if we
+	 * want to relocate moment "m" to the location "option", after another
+	 * solution was executed. The other 3 parameters are input for how the
+	 * schedule is changed after the other solution would be executed. This
+	 * method gives us the possibility to look 1 step into the future to see
+	 * what the outcome would be after a solution would be executed.
+	 * 
+	 * @param toBeLocated
+	 *            The moment we want to relocate
+	 * @param option
+	 *            The location to which we want to relocate it
+	 * @param changed
+	 *            A moment of which the location will be changed before we will
+	 *            execute the solution we will calculate in this method.
+	 * @param newSide
+	 *            The location to which the changed moment will be relocated.
+	 * @param changedCoordinates
+	 *            All coordinates which are changed due to the changed moment,
+	 *            this includes the new coordinates of the changed moment.
+	 * @return
+	 * @throws Exception 
+	 */
+	public SpaceSolutionAssembly locateMomentAtSideAfterChanges(TlpMoment toBeLocated,
+			Side option, TlpMoment changed, Side newSide,
+			HashMap<TlpMoment, Integer> changedCoordinates) throws Exception {
+		if (DEBUG) {
+			System.out.println("====================================================");
+			System.out.println("Locating " + toBeLocated.toString() + " at " + option.toString() + 
+				" after " + changed.toString() + " was located at " + newSide.toString() + 
+				" with changed coordinates: " + changedCoordinates.toString());
+		}
+		
+		if (!(option.getTrack().equals(newSide.getTrack()) || 
+				option.getTrack().equals(changed.getArrivingSide().getTrack()))) {
+			// if this does not hold this method will have the same outcome as
+			// the standard locateMomentAt method.
+			throw new Exception("the option " + option.toString() + " does not have the same track as " + changed.getArrivingSide().toString() + " or the new location " + newSide.toString()); 
+		}
+		if (!changedCoordinates.containsKey(changed)) {
+			throw new Exception("The changedCoordinates should always contain the changed Moment"); 
+		}
+		if (changed.getTrack().equals(newSide.getTrack())) {
+			throw new Exception("We cannot deal with cases where we try to relocate a moment on the same track"); 
+		}
+		
+		// Create a dummy node representing the moment "changed" with the new location. 
+		boolean add = option.getTrack().equals(newSide.getTrack()); 
+		TlpMomentDummy copy = new TlpMomentDummy(changed, newSide, changedCoordinates.get(changed), add); 
+
+		// Obtain a list of moments to the left and a list with moments to the right of the current moment. 
+		ArrayList<TlpMoment> aSide = toBeLocated.getMomentsAtTrack(option.getTrack()); 
+		if (copy.mustBeAdded(toBeLocated)) {
+			aSide.add(copy); 
+		} else {
+			aSide.remove(copy.getOriginal()); 
+		}
+		ArrayList<TlpMoment> bSide = new ArrayList<>(); 
+		splitMoments(aSide, bSide, toBeLocated.getTimePoint(), option); 
+		
+		// Get the most right coordinate of moments to the left of the current moment. 
+		int mostRightCoordinate = this.getMostRightCoordinateAfterChanges(aSide, changedCoordinates); 
+		
+		// create a solution for this moment such that it is located as most to the left as possible. 
+		SpaceSolutionAssembly spaceSolution = new SpaceSolutionAssembly(toBeLocated.getObservedMoment(), mostRightCoordinate, 0); 
+
+		// Propagate the new coordinate of this moment to the right (bSide)
+		int furthestPoint = mostRightCoordinate + toBeLocated.getTrainLength(); 
+		
+		this.propagateCoordinateToRightAfterChanges(furthestPoint, bSide, spaceSolution, changedCoordinates, copy);
+		
+		return spaceSolution;
+	}
+
+	private class TlpMomentDummy extends TlpMoment {
+		TlpMoment copiedFrom; 
+		boolean add; 
+		public TlpMomentDummy(TlpMoment m, Side newSide, int newCoordinate, boolean add) throws Exception {
+			super(new Location(newSide, newCoordinate), m.getFactory(), null);
+			this.copiedFrom = m; 
+			this.add		= add; 
+		}
+		public TlpMoment getOriginal() {
+			return this.copiedFrom; 
+		}
+		public boolean mustBeAdded(TlpMoment m) {
+			return this.add && m.overlapsWith(this); 
+		}
+	}
+
+	/**
+	 * Relocate the moment to the given option and shift moments on the old
+	 * track of moment m to the left if possible.
+	 * 
+	 * @param m
+	 * @param option
+	 * @return
+	 * @throws Exception 
+	 */
+	public SpaceSolutionAssembly relocateMomentAt(TlpMoment m, Side option ) throws Exception {
+		if (m.getArrivingSide().getTrack().equals(option.getTrack())) {
+			throw new Exception ("We cannot deal with relocating a moment to the same track, this can be implemented in the future. "); 
+		}
+		SpaceSolutionAssembly s = this.locateMomentAt(m, option); 
+		// Locate the train which is removed such that it will not influence
+		// moments to the right anymore.
+		this.propagateCoordinateToLeft(m, s);
+		return s; 
+	}
+	
+	/**
+	 * If a new moment is located on a track, some moments to the right of that
+	 * moment (bSide) might have to be shifted to the right. This is a recursive
+	 * method to propagate all shifts to the right on the same track. All
+	 * moments which have to be shifted are added to to the
+	 * SolutionSpaceAssambly.
+	 * 
+	 * The time complexity of this method is O(n^2) with n the amount of moments on this track for the complete maintenance day. 
+	 * 
+	 * @param smallestAllowedCoordinate The smallest coordinate which is still allowed for all moment within the bSide list. 
+	 * @param bSide The list of moments arriving to the right of the current moment. 
+	 * @param solution The set of solutions to which all solutions are added. 
+	 * @throws Exception 
+	 */
+	private void propagateCoordinateToRight(int smallestAllowedCoordinate,
+			ArrayList<TlpMoment> bSide, SpaceSolutionAssembly solution, Side option) throws Exception {
+		for (TlpMoment q : bSide) {
+			if (q.getCoordinate() < smallestAllowedCoordinate) {
+				solution.add(new SpaceSolution(q.getObservedMoment(), smallestAllowedCoordinate, 0));
+				
+				int smallestAfterQ 				= smallestAllowedCoordinate + q.getTrainLength(); 
+				
+				// TODO: getting all moments and then splitting them is not efficient, this should be calculated at most once per moment. 
+				// It's probably best to store this with the moment itself instead of calculating it here. 
+				ArrayList<TlpMoment> aSideOfQ 	= q.getMomentsAtSameTimeAtSameTrack(); 
+				ArrayList<TlpMoment> bSideOfQ 	= new ArrayList<>(); 
+				Side side = q.getArrivingSide(); 
+				splitMoments(aSideOfQ, bSideOfQ, q.getTimePoint(), side); 
+				
+				this.propagateCoordinateToRight(smallestAfterQ, bSideOfQ, solution, option);
+			}
+		}
+	}
+
+	/**
+	 * 
+	 * @param smallestAllowedCoordinate
+	 *            The smallest coordinate which any moment at bSide may have.
+	 * @param bSide
+	 *            A collection of moments at bSide of the moment which is
+	 *            shifted to the right.
+	 * @param solution
+	 *            The set of changes to be made such that the schedule is
+	 *            consistent.
+	 * @param changedCoordinates
+	 * @param copy
+	 * @throws Exception
+	 */
+	private void propagateCoordinateToRightAfterChanges(int smallestAllowedCoordinate,
+			ArrayList<TlpMoment> bSide, SpaceSolutionAssembly solution,
+			HashMap<TlpMoment, Integer> changedCoordinates,
+			TlpMomentDummy copy) throws Exception {
+		
+		for (TlpMoment q : bSide) {
+			if (DEBUG) System.out.println("propagate " + q.toString() + " to " + smallestAllowedCoordinate);
+			
+			int qCoordinate = changedCoordinates.containsKey(q) ? changedCoordinates.get(q) : q.getCoordinate(); 
+			if (qCoordinate < smallestAllowedCoordinate) {
+				solution.add(new SpaceSolution(q.getObservedMoment(), smallestAllowedCoordinate, 0));
+	
+				int smallestAfterQ 				= smallestAllowedCoordinate + q.getTrainLength(); 
+	
+				ArrayList<TlpMoment> aSideOfQ 	= q.getMomentsAtSameTimeAtSameTrack(); 
+				if (copy.mustBeAdded(q) && !copy.equals(q)) {
+					aSideOfQ.add(copy); 
+				} else {
+					aSideOfQ.remove(copy.getOriginal()); 
+				}
+				ArrayList<TlpMoment> bSideOfQ 	= new ArrayList<>(); 
+				splitMoments(aSideOfQ, bSideOfQ, q.getTimePoint(), q.getArrivingSide()); 
+				
+				this.propagateCoordinateToRightAfterChanges(smallestAfterQ, bSideOfQ, solution, changedCoordinates, copy);
+			}
+		}
+	}
+
+	/**
+	 * Returns the coordinate farthest away from 0. Note that we assume that 0
+	 * is the most left coordinate.
+	 * 
+	 * @param aSide a list of moments arriving to the left of this moment. 
+	 * @return
+	 */
+	private int getMostRightCoordinate(ArrayList<TlpMoment> aSide) {		
+		if (0 == aSide.size()) {
+			return 0; 
+		}
+		TlpMoment firstMoment = aSide.get(0); 
+		int mostRightCoordinate	= firstMoment.getCoordinate() +firstMoment.getTrainLength(); 
+		for (TlpMoment q : aSide) {
+			int qCoordinate = q.getCoordinate() + q.getTrainLength(); 
+			if (mostRightCoordinate < qCoordinate) {
+				mostRightCoordinate = qCoordinate; 
+			}
+		}
+		return mostRightCoordinate;
+	}
+	
+	private int getMostRightCoordinateAfterChanges(ArrayList<TlpMoment> aSide,
+			HashMap<TlpMoment, Integer> changedCoordinates) {		
+		if (0 == aSide.size()) {
+			return 0; 
+		}
+		TlpMoment firstMoment = aSide.get(0); 
+		int mostRightCoordinate	= (changedCoordinates.containsKey(firstMoment)) 
+				? changedCoordinates.get(firstMoment) : firstMoment.getCoordinate(); 
+		mostRightCoordinate		+= firstMoment.getTrainLength(); 
+		for (TlpMoment q : aSide) {
+			int qCoordinate = (changedCoordinates.containsKey(q)) 
+					? changedCoordinates.get(q) : q.getCoordinate(); 
+			qCoordinate		+= q.getTrainLength(); 
+			if (mostRightCoordinate < qCoordinate) {
+				mostRightCoordinate = qCoordinate; 
+			}
+		}
+	return mostRightCoordinate;
+	}
+		
+	/**
+	 * This method lets the moments left of this.m in the aSide list and puts
+	 * the moments right of this.m in bSide.
+	 * 
+	 * @param aSide
+	 *            the list with all moments in it.
+	 * @param bSide
+	 *            an empty list where all moments to the right of this.m are
+	 *            going to be stored in.
+	 * @param timePoint
+	 *            The timePoint on which this.m is arriving
+	 * @param s
+	 *            The side where this.m is arriving at
+	 * @throws Exception
+	 */
+	public static void splitMoments(ArrayList<TlpMoment> aSide,
+		ArrayList<TlpMoment> bSide, int timePoint, Side s) throws Exception {
+		for (int i = 0; i<aSide.size(); ) {
+			TlpMoment q = aSide.get(i); 
+			if (isLeftOf(q, timePoint, s)) {
+				i++; 
+			}
+			else {
+				bSide.add(aSide.remove(i)); 
+			}
+		}
+	}
+
+	/**
+	 * Returns true if moment q arrives to the left of the given timePoint and side . 
+	 * 
+	 * @param q
+	 * @param timePoint 
+	 * @param s
+	 * @param coordinate 
+	 * @return
+	 * @throws Exception 
+	 */
+	private static boolean isLeftOf(TlpMoment q, int timePoint, Side s2) throws Exception {
+		Side s1 = q.getArrivingSide(); 
+		int t1	= q.getTimePoint(); 
+		if (!s1.getTrack().equals(s2.getTrack())) {
+			throw new Exception("Cannot determine if " + q.toString() + " is left of " + s2.toString() + " since it is located on " + q.getArrivingSide().toString());
+		}
+		// if q is from side A and s is side B, 	q is left of s
+		if (s1.isSideA() && s2.isSideB()) {
+			return true; 
+		}
+		// if q is from side B and s is side A, 	q is right of s
+		if (s1.isSideB() && s2.isSideA()) {
+			return false; 
+		}
+		// if q is from side A and s is side A,  
+		if (s1.isSideA() && s2.isSideA()) {
+			
+			// if q arrives earlier than s,			q is right of s 
+			if (t1 < timePoint) {
+				return false; 
+			}
+			// if q arrives later than s, 			q is left of s
+			else if (t1 > timePoint) {
+				return true; 
+			}
+			else {
+				throw new Exception("The id's of two moments may never be equal:" + q.toString()); 
+			}
+		}
+		// if q and s are both from side B, 	
+		if (s1.isSideB() && s2.isSideB()) {
+			// if q arrives earlier than s,			q is left of s 
+			if (t1 < timePoint) {
+				return true; 
+			}
+			// if q arrives later than s, 			q is right of s
+			else if (t1 > timePoint) {
+				return false; 
+			}
+			else {
+				throw new Exception("The id's of two moments may never be equal"); 
+			}
+		}
+		throw new Exception("One of the if statements should always apply, for sides " + s1.toString() + " and " + s2.toString());
+	}
+
+}

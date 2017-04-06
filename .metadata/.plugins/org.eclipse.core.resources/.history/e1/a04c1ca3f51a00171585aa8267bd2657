@@ -1,0 +1,37 @@
+package mspInstance;
+
+public class Precedence {
+	private Task before; 
+	private Task after;
+	
+	
+	public Precedence(Task before, Task after) {
+		this.before = before; 
+		this.after = after; 
+	}
+	public Task getBefore() {
+		return before;
+	}
+	public void setBefore(Task before) {
+		this.before = before;
+	}
+	public Task getAfter() {
+		return after;
+	}
+	public void setAfter(Task after) {
+		this.after = after;
+	} 
+	public String toString() {
+		StringBuilder sb = new StringBuilder(); 
+		sb.append(before.getTrain().getName()); 
+		sb.append("("); 
+		sb.append(before.getName()); 
+		sb.append(")\t--> "); 
+		sb.append(after.getTrain().getName()); 
+		sb.append("("); 
+		sb.append(after.getName()); 
+		sb.append(")"); 
+		return  sb.toString(); 
+	}
+
+}
